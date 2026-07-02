@@ -41,38 +41,11 @@ async def get_vcf_metadata(
 ):
     """Returns the list of samples and metadata description."""
     
-    # CASE 1: CLI Mode (Check form value OR fallback to system environment vars)
-    env_vcf_path = os.environ.get("VISUAMITRA_VCF")
-    resolved_input_path = vcf_path if (vcf_path and os.path.isabs(vcf_path)) else env_vcf_path
+    # If a browser upload file is explicitly provided, skip CLI logic completely!
+    if vcf and hasattr(vcf, "filename") and vcf.filename:
+        _CLI_PATHS_CACHE["vcf"] = None
+        _CLI_PATHS_CACHE["tbi"] = None
 
-    if resolved_input_path:
-        if not os.path.exists(resolved_input_path):
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Local VCF file path not found on disk: {resolved_input_path}"
-            )
-        absolute_vcf_path = os.path.abspath(resolved_input_path)
-        if os.path.exists(absolute_vcf_path):
-            # Resolve the expected TBI index path location safely
-            p = Path(absolute_vcf_path)
-            absolute_tbi_path = p.with_suffix(p.suffix + ".tbi")
-            if not absolute_tbi_path.exists():
-                # Fallback check if it uses the shorter .tbi naming scheme
-                absolute_tbi_path = p.with_suffix(".tbi")
-
-            # Update global tracking matrix dictionary
-            _CLI_PATHS_CACHE["vcf"] = absolute_vcf_path
-            _CLI_PATHS_CACHE["tbi"] = os.path.abspath(absolute_tbi_path) if absolute_tbi_path.exists() else None
-            
-            actual_path = absolute_vcf_path            
-            cutoff_info, total_samples, ref_genome = extract_methcutoff(actual_path)
-            return {
-                "meth_cutoff": cutoff_info,
-                "samples": total_samples,
-                "ref_genome": ref_genome
-            }
-    # CASE 2: Browser Mode (vcf file is uploaded)
-    if vcf:
         tmpdir = tempfile.mkdtemp(prefix="vcf_meta_")
         actual_path = os.path.join(tmpdir, vcf.filename)
         try:
@@ -87,6 +60,34 @@ async def get_vcf_metadata(
         finally:
             if os.path.exists(actual_path):
                 shutil.rmtree(tmpdir)
+
+    # CASE 2: CLI Mode / Local Path execution
+    env_vcf_path = os.environ.get("VISUAMITRA_VCF")
+    resolved_input_path = vcf_path if (vcf_path and os.path.isabs(vcf_path)) else env_vcf_path
+
+    if resolved_input_path:
+        if not os.path.exists(resolved_input_path):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Local VCF file path not found on disk: {resolved_input_path}"
+            )
+        absolute_vcf_path = os.path.abspath(resolved_input_path)
+        if os.path.exists(absolute_vcf_path):
+            p = Path(absolute_vcf_path)
+            absolute_tbi_path = p.with_suffix(p.suffix + ".tbi")
+            if not absolute_tbi_path.exists():
+                absolute_tbi_path = p.with_suffix(".tbi")
+
+            _CLI_PATHS_CACHE["vcf"] = absolute_vcf_path
+            _CLI_PATHS_CACHE["tbi"] = os.path.abspath(absolute_tbi_path) if absolute_tbi_path.exists() else None
+            
+            actual_path = absolute_vcf_path            
+            cutoff_info, total_samples, ref_genome = extract_methcutoff(actual_path)
+            return {
+                "meth_cutoff": cutoff_info,
+                "samples": total_samples,
+                "ref_genome": ref_genome
+            }
     
     raise HTTPException(status_code=400, detail="No VCF source provided")
 
@@ -114,16 +115,24 @@ async def vcf_to_tsv_cursor(
     working_vcf_path = ""
     tmpdir = None
 
-    # Only trust form values if they provide an absolute path layout
+    # Detect if this request is a physical browser upload payload
+    is_browser_upload = (vcf and hasattr(vcf, "filename") and vcf.filename)
+
+    # Resolve VCF: only look at memory cache if it's NOT a browser upload
     if vcf_path and os.path.isabs(vcf_path):
         resolved_vcf = vcf_path
-    else:
+    elif not is_browser_upload:
         resolved_vcf = _CLI_PATHS_CACHE["vcf"]
+    else:
+        resolved_vcf = None
 
+    # Resolve TBI: only look at memory cache if it's NOT a browser upload
     if tbi_path and os.path.isabs(tbi_path):
         resolved_tbi = tbi_path
-    else:
+    elif not is_browser_upload:
         resolved_tbi = _CLI_PATHS_CACHE["tbi"]
+    else:
+        resolved_tbi = None
     # CLI Mode / Cached Fallback
     if resolved_vcf:
         if not os.path.exists(resolved_vcf):

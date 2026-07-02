@@ -23,6 +23,13 @@ export default function VCFUploadPanel({ onLoad }) {
     if (isCLI) {
       handleCLILoad();
     }
+    else {
+      // clear out all CLI artifacts when dropping back to Browser Mode
+      setVcfFile(null);
+      setTbiFile(null);
+      setAvailableSamples([]);
+      setSelectedSamples([]);
+    }
   }, [isCLI]);
 
   const handleCLILoad = async () => {
@@ -45,7 +52,8 @@ export default function VCFUploadPanel({ onLoad }) {
 
         const metaRes = await fetch("/api/get-vcf-metadata", { 
           method: "POST", 
-          body: formData 
+          body: formData,
+          headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
         });
         
         if (!metaRes.ok) throw new Error("Could not read local VCF metadata");
@@ -94,6 +102,8 @@ export default function VCFUploadPanel({ onLoad }) {
 
     setVcfFile(fileCheck.vcf);
     setTbiFile(fileCheck.tbi);
+    setAvailableSamples([]);
+    setSelectedSamples([]);
 
     if (fileCheck.errorMsg && !fileCheck.tbi) {
       setError(fileCheck.errorMsg);
@@ -104,7 +114,11 @@ export default function VCFUploadPanel({ onLoad }) {
       formData.append("vcf", fileCheck.vcf);
 
       try {
-        const res = await fetch("/api/get-vcf-metadata", { method: "POST", body: formData });
+        const res = await fetch("/api/get-vcf-metadata", { 
+          method: "POST", 
+          body: formData,
+          headers: { "Cache-Control": "no-cache", "Pragma": "no-cache" }
+        });
         if (!res.ok) throw new Error("Could not fetch VCF metadata");
         
         const meta = await res.json();
