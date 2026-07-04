@@ -3,29 +3,22 @@ import { getCanonicalMotif } from "../utils/colorUtils";
 
 export default function DecompositionPlot({
   decompRef,
-  decompA1,
-  decompA2,
+  decompA1, // represents active track lane to render (Ref, A1, A2, A3, etc.)
   alleleLenRef = 0,
   alleleLen1 = 0,
-  alleleLen2 = 0,
   scaleX,
   leftMargin,
   colorMap,
-  yOffset = 60,
-  rowGap = 14,
+  yOffset = 0,
   refMotif,
+  baseFontSize = 13
 }) {
   const barHeight = 20;
   const MAGNIFY_SIZE = 6;
   const [hover, setHover] = useState(null);
 
   const renderMotifs = (data, baseY, trackLabel, totalLen) => {
-    // 1. Check if we actually have motif data
     const hasData = data && data.lengths && data.lengths.length > 0;
-    
-    // 2. Determine the width of our "container"
-    // If no data: use the full reported allele length (fallback)
-    // If data exists: use the sum of segments (no "ghost" tail)
     const sumOfSegments = hasData ? data.lengths.reduce((a, b) => a + b, 0) : 0;
     const visualTotal = hasData ? sumOfSegments : totalLen;
 
@@ -35,7 +28,7 @@ export default function DecompositionPlot({
 
     return (
       <g>
-        {/* Background Bar: Only acts as a placeholder when segments are missing */}
+        {/* Background Bar */}
         <rect
           x={startX}
           y={baseY}
@@ -57,18 +50,20 @@ export default function DecompositionPlot({
           onMouseLeave={() => setHover(null)}
         />
 
-        {/* Motif Segments: Only render if data exists */}
+        {/* Motif Segments */}
         {hasData && data.lengths.map((len, i) => {
           const currentOffset = data.lengths.slice(0, i).reduce((a, b) => a + b, 0);
           const x1 = scaleX(currentOffset);
           const w = scaleX(currentOffset + len) - x1;
-          
           const id = `${trackLabel}-${i}`;
           const isHovered = hover?.id === id;
-          const canonical = getCanonicalMotif(data.motifs[i] || "", refMotif);
-          //const isMainMotif = canonical === (refMotif || "").toUpperCase();
-          const isKnown = !!colorMap[canonical];  
-          const fillColor = isKnown ? colorMap[canonical] : "#bdbdbd";
+          const rawMotif = (data.motifs[i] || "").toUpperCase();
+          const currentCopies = data.copies[i] || 0;
+          const isNonRepetitive = currentCopies <= 1 || rawMotif.includes("N_REPETITIVE") || rawMotif.includes("FLANK");
+          // BYPASS CYCLIC VARIATION
+          const lookupKey = isNonRepetitive ? rawMotif : getCanonicalMotif(rawMotif, refMotif);
+          const isKnown = !!colorMap[lookupKey];  
+          const fillColor = isKnown ? colorMap[lookupKey] : "#bdbdbd";
 
           return (
             <rect
@@ -83,18 +78,15 @@ export default function DecompositionPlot({
               rx={2}
               onMouseEnter={(e) => {
               e.stopPropagation();
-              const rawMotif = (data.motifs[i] || "").toUpperCase();
-              const canonical = getCanonicalMotif(data.motifs[i] || "", refMotif);
 
               setHover({
                 id,
                 x: x1 + w / 2,
                 y: baseY - 12,
                 motif: rawMotif,
-                // Use the parsed copies and lengths directly for perfect sync
-                copy: data.copies[i], 
+                copy: currentCopies, 
                 len: len,
-                isNonRepeating: data.copies[i] <= 1,
+                isNonRepeating: isNonRepetitive,
               });
             }}
               onMouseLeave={() => setHover(null)}
@@ -105,41 +97,36 @@ export default function DecompositionPlot({
     );
   };
 
-  // Dynamic Y positions: 
-  // If decompRef is missing, yA1 moves to the top (yOffset).
-  const yRef = yOffset;
-  const yA1 = decompRef ? (yOffset + barHeight + rowGap) : yOffset;
-  const yA2 = decompRef 
-    ? (yOffset + 2 * (barHeight + rowGap)) 
-    : (yOffset + barHeight + rowGap);
-    
   return (
     <>
       {/* Reference Track */}
       {decompRef && (
         <g>
-          <text x={leftMargin - 95} y={yRef + barHeight / 1.5} fontSize="14" fontWeight="bold">Ref. Allele</text>
-          {renderMotifs(decompRef, yRef, "ref", alleleLenRef)}
+          <text 
+            x={leftMargin - 15} 
+            y={yOffset + (barHeight * 0.72)} 
+            textAnchor="end"
+            style={{ 
+              fontFamily: "inherit", 
+              fontSize: `${baseFontSize}px`, 
+              fontWeight: "bold", 
+              fill: "#222" 
+            }}
+          >
+            Ref. Allele
+          </text>
+          {renderMotifs(decompRef, yOffset, "ref", alleleLenRef)}
         </g>
       )}
 
-      {/* Allele 1 Track */}
-      {decompA1 && (
+      {/* Dynamic Alleles Track */}
+      {decompA1 && !decompRef && (
         <g>
-          <text x={leftMargin - 95} y={yA1 + barHeight / 1.5} fontSize="14" fontWeight="bold">Allele 1</text>
-          {renderMotifs(decompA1, yA1, "a1", alleleLen1)}
+          {renderMotifs(decompA1, yOffset, "allele-lane", alleleLen1)}
         </g>
       )}
 
-      {/* Allele 2 Track */}
-      {decompA2 && (
-        <g>
-          <text x={leftMargin - 95} y={yA2 + barHeight / 1.5} fontSize="14" fontWeight="bold">Allele 2</text>
-          {renderMotifs(decompA2, yA2, "a2", alleleLen2)}
-        </g>
-      )}
-
-      {/* Tooltip */}
+      {/* Shared Tooltip */}
       {hover && (
         <g pointerEvents="none">
           <foreignObject x={hover.x - 75} y={hover.y - 30} width="150" height="60" style={{ overflow: "visible" }}>

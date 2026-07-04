@@ -8,12 +8,13 @@ import pysam
 from typing import Optional, Any
 import base64
 import re
+from pathlib import Path
 
 from .visuamitra_script import visuamitra_data_extract_stream, extract_methcutoff
 
 router = APIRouter()
 
-_CLI_VCF_PATH_CACHE = None
+_CLI_PATHS_CACHE = {"vcf": None, "tbi": None}
 
 def encode_cursor(chr, pos):
     raw = f"{chr}:{pos}"
@@ -39,42 +40,54 @@ async def get_vcf_metadata(
     vcf_path: Optional[str] = Form(None)     
 ):
     """Returns the list of samples and metadata description."""
-
-    global _CLI_VCF_PATH_CACHE
     
-    # CASE 1: CLI Mode (vcf_path is provided)
-    if vcf_path:
-        if not os.path.exists(vcf_path):
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Local VCF file path not found on disk: {vcf_path}"
-            )
-        # Convert relative path to absolute
-        absolute_vcf_path = os.path.abspath(vcf_path)
-        if os.path.exists(absolute_vcf_path):
-            _CLI_VCF_PATH_CACHE = absolute_vcf_path
-            actual_path = absolute_vcf_path            
-            cutoff_info, total_samples = extract_methcutoff(actual_path)
-            return {
-                "meth_cutoff": cutoff_info,
-                "samples": total_samples
-            }
+    # If a browser upload file is explicitly provided, skip CLI logic completely!
+    if vcf and hasattr(vcf, "filename") and vcf.filename:
+        _CLI_PATHS_CACHE["vcf"] = None
+        _CLI_PATHS_CACHE["tbi"] = None
 
-    # CASE 2: Browser Mode (vcf file is uploaded)
-    if vcf:
         tmpdir = tempfile.mkdtemp(prefix="vcf_meta_")
         actual_path = os.path.join(tmpdir, vcf.filename)
         try:
             with open(actual_path, "wb") as f:
                 shutil.copyfileobj(vcf.file, f)
-            cutoff_info, total_samples = extract_methcutoff(actual_path)
+            cutoff_info, total_samples, ref_genome = extract_methcutoff(actual_path)
             return {
                 "meth_cutoff": cutoff_info,
-                "samples": total_samples
+                "samples": total_samples,
+                "ref_genome": ref_genome
             }
         finally:
             if os.path.exists(actual_path):
                 shutil.rmtree(tmpdir)
+
+    # CASE 2: CLI Mode / Local Path execution
+    env_vcf_path = os.environ.get("VISUAMITRA_VCF")
+    resolved_input_path = vcf_path if (vcf_path and os.path.isabs(vcf_path)) else env_vcf_path
+
+    if resolved_input_path:
+        if not os.path.exists(resolved_input_path):
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Local VCF file path not found on disk: {resolved_input_path}"
+            )
+        absolute_vcf_path = os.path.abspath(resolved_input_path)
+        if os.path.exists(absolute_vcf_path):
+            p = Path(absolute_vcf_path)
+            absolute_tbi_path = p.with_suffix(p.suffix + ".tbi")
+            if not absolute_tbi_path.exists():
+                absolute_tbi_path = p.with_suffix(".tbi")
+
+            _CLI_PATHS_CACHE["vcf"] = absolute_vcf_path
+            _CLI_PATHS_CACHE["tbi"] = os.path.abspath(absolute_tbi_path) if absolute_tbi_path.exists() else None
+            
+            actual_path = absolute_vcf_path            
+            cutoff_info, total_samples, ref_genome = extract_methcutoff(actual_path)
+            return {
+                "meth_cutoff": cutoff_info,
+                "samples": total_samples,
+                "ref_genome": ref_genome
+            }
     
     raise HTTPException(status_code=400, detail="No VCF source provided")
 
@@ -102,31 +115,40 @@ async def vcf_to_tsv_cursor(
     working_vcf_path = ""
     tmpdir = None
 
-    # Check if a path came from frontend form
-    resolved_path = vcf_path if vcf_path else _CLI_VCF_PATH_CACHE
+    # Detect if this request is a physical browser upload payload
+    is_browser_upload = (vcf and hasattr(vcf, "filename") and vcf.filename)
 
+    # Resolve VCF: only look at memory cache if it's NOT a browser upload
+    if vcf_path and os.path.isabs(vcf_path):
+        resolved_vcf = vcf_path
+    elif not is_browser_upload:
+        resolved_vcf = _CLI_PATHS_CACHE["vcf"]
+    else:
+        resolved_vcf = None
+
+    # Resolve TBI: only look at memory cache if it's NOT a browser upload
+    if tbi_path and os.path.isabs(tbi_path):
+        resolved_tbi = tbi_path
+    elif not is_browser_upload:
+        resolved_tbi = _CLI_PATHS_CACHE["tbi"]
+    else:
+        resolved_tbi = None
     # CLI Mode / Cached Fallback
-    if resolved_path:
-        if not os.path.exists(resolved_path):
+    if resolved_vcf:
+        if not os.path.exists(resolved_vcf):
             raise HTTPException(
                 status_code=400, 
-                detail=f"Local VCF path not found on disk: {resolved_path}"
-            )
-            
-        if tbi_path and not os.path.exists(tbi_path):
-            raise HTTPException(
-                status_code=400, 
-                detail=f"Local TBI index path not found on disk: {tbi_path}"
-            )
-        absolute_vcf_path = os.path.abspath(resolved_path)
-        if os.path.exists(absolute_vcf_path):
-            working_vcf_path = absolute_vcf_path
-        else:
-            raise HTTPException(
-                status_code=400, 
-                 detail=f"CLI path tracking failed. File not found at: {absolute_vcf_path}"
+                detail=f"Local VCF path not found on disk: {resolved_vcf}"
             )
         
+        # verify if index tracker location exists on disk
+        if not resolved_tbi or not os.path.exists(resolved_tbi):
+            raise HTTPException(
+                status_code=400, 
+                detail="Local TBI index path missing or not found on disk."
+            )
+            
+        working_vcf_path = os.path.abspath(resolved_vcf)
     # Browser Mode (vcf must be a real UploadFile)
     elif vcf and hasattr(vcf, "filename") and vcf.filename:
         tmpdir = tempfile.mkdtemp(prefix="vcf_")
@@ -242,7 +264,7 @@ async def vcf_to_tsv_cursor(
     next_cursor = None
     seen_header = False
     count = 0
-    header_line = "Chrom\tStart\tEnd\tID\tMotif\tMotif_size\tSampleID\tSampleIdx\tGT\tSequences\tRead_support\tDecomp_seq\tDecomp_info\tUnique_motifs\tMean_meth\tMeth_tag\n"
+    header_line = "Chrom\tStart\tEnd\tID\tMotif\tMotif_size\tSampleID\tSampleIdx\tGT\tSequences\tRead_support\tDecomp_seq\tDecomp_info\tUnique_motifs\tMean_meth\tMeth_tag\tLPM\n"
     collected = [header_line]
 
     # MULTI-CHROMOSOME STREAMING LOOP 

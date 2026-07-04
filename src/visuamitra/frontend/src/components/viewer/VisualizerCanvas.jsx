@@ -1,8 +1,8 @@
 import React from "react";
 import DecompositionPlot from "../DecompositionPlot";
 import MethylationPlot from "../MethylationPlot";
+import OverviewDashboard from "../OverviewDashboard";
 import Axis from "../Axis";
-import { parseDecompFromTSV } from "../../utils/parseDecompInfo";
 
 const safeJson = (s) => {
   if (!s) return null;
@@ -22,16 +22,17 @@ export default function VisualizerCanvas({
   hoverX,
   onHoverX,
   loading,
-  fullLen
+  fullLen,
+  baseFontSize = 13,
+  currentFont = "Arial, sans-serif"
 }) {
-  const isDecomp = viewMode === "decomposition";
-  const SAMPLE_HEIGHT = isDecomp ? 100 : 130; 
-  const REF_HEIGHT = isDecomp ? 60 : 0; 
-  const HEADER_TOP = 40; 
-  const AXIS_HEIGHT = 60;  
-  const TOTAL_HEIGHT = HEADER_TOP + REF_HEIGHT + (selectedSamples.length * SAMPLE_HEIGHT) + AXIS_HEIGHT;
 
-  // CHECK: If data doesn't exist yet, return a skeleton or null
+  if (viewMode === "overview") {
+    return (
+      <OverviewDashboard data={data} selectedSamples={selectedSamples} availableSamples={availableSamples} baseFontSize={baseFontSize}/>
+    );
+  }
+
   if (!data || !data.samples || Object.keys(data.samples).length === 0) {
     return (
       <div style={containerStyle}>
@@ -42,167 +43,266 @@ export default function VisualizerCanvas({
     );
   }
 
-  const sampleKeys = Object.keys(data.samples);
+  const isDecomp = viewMode === "decomposition";
+  const isCombined = viewMode === "combined";
+  
+  // Detect if a wider, monospaced font is currently active
+  const isWideFont = currentFont.toLowerCase().includes("mono") || currentFont.toLowerCase().includes("courier");
+  
+  // DYNAMIC SCALING RATIOS
+  const estimatedCharWidth = isWideFont ? baseFontSize * 0.78 : baseFontSize * 0.6;
+  const leftMarginOffset = Math.max(margins.left, estimatedCharWidth * 9.5); 
+
+  const TRACK_HEIGHT = baseFontSize * 2.2; 
+  const TRACK_GAP = Math.max(10, baseFontSize * 0.75); 
+  const TEXT_VERTICAL_OFFSET = (TRACK_HEIGHT / 2) + (baseFontSize * 0.35); 
+  const SAMPLE_PADDING_BORDER = Math.max(45, baseFontSize * 3.0);
+  
+  const HEADER_TOP = Math.max(80, baseFontSize * 4.5); 
+  const REF_HEIGHT = (isDecomp || isCombined) ? TRACK_HEIGHT + (baseFontSize * 2.0) : 0; 
+  const AXIS_HEIGHT = Math.max(75, baseFontSize * 4.0);
+
+  let totalSamplesHeight = 0;
+  if (isCombined) {
+    const singleSampleName = selectedSamples[0];
+    const sample = data.samples[singleSampleName];
+    const trackCount = sample?.parsedDecomp?.length || 2;
+    
+    const decompBlockHeight = (trackCount * TRACK_HEIGHT) + ((trackCount - 1) * TRACK_GAP) + (baseFontSize * 2.5); 
+    const methBlockHeight = (trackCount * TRACK_HEIGHT) + ((trackCount - 1) * TRACK_GAP) + (baseFontSize * 2.5);
+    totalSamplesHeight = decompBlockHeight + methBlockHeight + baseFontSize; 
+  } else {
+    selectedSamples.forEach((sampleName) => {
+      const sample = data.samples[sampleName];
+      const trackCount = sample?.parsedDecomp?.length || 2;
+      
+      const sampleLabelHeight = baseFontSize * 2.2; 
+      const tracksAreaHeight = (trackCount * TRACK_HEIGHT) + ((trackCount - 1) * TRACK_GAP);
+      const sampleBlockHeight = sampleLabelHeight + tracksAreaHeight + SAMPLE_PADDING_BORDER;
+      
+      totalSamplesHeight += sampleBlockHeight;
+    });
+  }
+
+  const TOTAL_HEIGHT = HEADER_TOP + REF_HEIGHT + totalSamplesHeight + AXIS_HEIGHT;
   const globalRef = data.refTrack;
+  let currentYTracker = HEADER_TOP + REF_HEIGHT;
+
   return (
-    <div style={containerStyle}>
-      <svg width={totalSvgWidth} height={TOTAL_HEIGHT}>
+    <div style={{ ...containerStyle, paddingBottom: "35px", fontFamily: currentFont }}>
+      <svg 
+        width={totalSvgWidth} 
+        height={TOTAL_HEIGHT} 
+        style={{ display: "block", overflow: "visible" }}
+      >
         
-        {/* GLOBAL VERTICAL GUIDE LINE */}
         {hoverX !== null && (
-          <line
-            x1={hoverX}
-            y1={0}
-            x2={hoverX}
-            y2={TOTAL_HEIGHT - AXIS_HEIGHT}
-            stroke="#444"
-            strokeWidth="1.5"
-            strokeDasharray="4,2"
-            opacity="0.4"
-            pointerEvents="none"
-          />
+          <line x1={hoverX} y1={0} x2={hoverX} y2={TOTAL_HEIGHT - AXIS_HEIGHT} stroke="#444" strokeWidth="1.5" strokeDasharray="4,2" opacity="0.4" pointerEvents="none" />
+        )}
+        
+        {/* GLOBAL SAMPLE NAME LABEL */}
+        {isCombined && selectedSamples[0] && (
+          <text x={leftMarginOffset} y={25} style={{ fontWeight: "bold", fontSize: `${baseFontSize + 2}px`, fill: "#222", fontFamily: currentFont }}>
+            {data.samples[selectedSamples[0]]?.SampleID || selectedSamples[0]}
+          </text>
         )}
 
-        {/* REFERENCE SECTION */}
-        {isDecomp && (
+        {/* REFERENCE GENOME LANE */}
+        {(isDecomp || isCombined) && globalRef && (
           <g transform={`translate(0, ${HEADER_TOP})`}>
             <DecompositionPlot
-              decompRef={globalRef} 
-              decompA1={null} 
-              decompA2={null}
+              decompRef={globalRef} decompA1={null} decompA2={null}
               alleleLenRef={(globalRef?.lengths || []).reduce((a, b) => a + b, 0)}
-              scaleX={scaleX}
-              leftMargin={margins.left}
-              refMotif={data.Motif}
-              colorMap={colorMap}
-              yOffset={0}
-              rowGap={0}
+              scaleX={scaleX} leftMargin={leftMarginOffset} refMotif={data.Motif} colorMap={colorMap} yOffset={0} rowGap={0} 
+              baseFontSize={baseFontSize} barHeight={TRACK_HEIGHT - 6}
             />
-            <line x1={0} y1={40} x2={totalSvgWidth} y2={40} stroke="#2d5a27" strokeWidth="1" strokeDasharray="4,4" opacity="0.3" />
+            <line x1={0} y1={REF_HEIGHT - 10} x2={totalSvgWidth} y2={REF_HEIGHT - 10} stroke="#2d5a27" strokeWidth="1" strokeDasharray="4,4" opacity="0.3" />
           </g>
         )}
 
-        {/* SAMPLES SECTION */}
-        {selectedSamples.map((sIdx, i) => {
-          const sample = data.samples[sIdx];
-          const sampleName = availableSamples[sIdx] || `Index ${sIdx}`;
-          const yOffset = HEADER_TOP + REF_HEIGHT + (i * SAMPLE_HEIGHT);
+        {/* COMBINED SINGLE SAMPLE VIEW */}
+        {isCombined ? (() => {
+          const sampleName = selectedSamples[0];
+          const sample = data.samples[sampleName];
+          if (!sample) return null;
 
-          if (!sample && loading) {
+          const trackCount = sample.parsedDecomp?.length || 2;
+          const methTags = safeJson(sample.Meth_tag) || [];
+          const firstPos = methTags[0]?.[0]?.[0] || 0;
+          const startOffset = (firstPos > 100000) ? Number(data.Start || 0) : 0;
+
+          const decompPlotTracksHeight = (trackCount * TRACK_HEIGHT) + ((trackCount - 1) * TRACK_GAP);
+          
+          const yDecompHeader = currentYTracker + baseFontSize;
+          const yDecompPlotStart = yDecompHeader + (baseFontSize * 1.5);
+          
+          const yMethHeader = yDecompPlotStart + decompPlotTracksHeight + (baseFontSize * 2.5);
+          const yMethPlotStart = yMethHeader + (baseFontSize * 1.5);
+
           return (
-            <g key={sIdx} transform={`translate(0, ${yOffset})`}>
-              <text x={margins.left} y={15} fill="#666" fontStyle="italic">
-                Loading data for {sampleName}...
+            <g key={sampleName}>
+              <text x={leftMarginOffset} y={yDecompHeader} style={{ fontWeight: "bold", fontSize: `${baseFontSize}px`, fill: "#333", fontFamily: currentFont }}>
+                Decomposition
               </text>
+              <g transform={`translate(0, ${yDecompPlotStart})`}>
+                {sample.parsedDecomp.map((track, trackIdx) => {
+                  const currentTrackY = trackIdx * (TRACK_HEIGHT + TRACK_GAP);
+                  const calculatedLen = (track.lengths || []).reduce((a, b) => a + (Number(b) || 0), 0);
+                  const displayLen = sample.trackLengths?.[trackIdx] || calculatedLen || 0;
+
+                  return (
+                    <g key={`decomp-${trackIdx}`} transform={`translate(0, ${currentTrackY})`}>
+                      <text x={leftMarginOffset - 15} y={TEXT_VERTICAL_OFFSET} textAnchor="end" style={{ fontSize: `${baseFontSize}px`, fill: "#333", fontWeight: "500", fontFamily: currentFont }}>
+                        Allele {trackIdx + 1}
+                      </text>
+                      <DecompositionPlot
+                        decompRef={null} decompA1={track} decompA2={null} alleleLenRef={0} alleleLen1={displayLen} alleleLen2={0}
+                        scaleX={scaleX} leftMargin={leftMarginOffset} colorMap={colorMap} refMotif={data.Motif} yOffset={0} rowGap={0}
+                        baseFontSize={baseFontSize} barHeight={TRACK_HEIGHT - 6}
+                      />
+                    </g>
+                  );
+                })}
+              </g>
+
+              <text x={leftMarginOffset} y={yMethHeader} style={{ fontWeight: "bold", fontSize: `${baseFontSize}px`, fill: "#333", fontFamily: currentFont }}>
+                Methylation
+              </text>
+              <g transform={`translate(0, ${yMethPlotStart})`}>
+                {sample.parsedDecomp.map((track, trackIdx) => {
+                  const currentTrackY = trackIdx * (TRACK_HEIGHT + TRACK_GAP);
+                  const rawTrackMeth = methTags[trackIdx];
+                  
+                  let mTrack = { pos: [], lvl: [] };
+                  if (rawTrackMeth && rawTrackMeth !== "NA" && Array.isArray(rawTrackMeth)) {
+                    mTrack = {
+                      pos: (rawTrackMeth[0] || []).flat().map(p => Number(p) - startOffset),
+                      lvl: (rawTrackMeth[1] || []).flat().map(l => Number(l))
+                    };
+                  }
+                  if ((safeJson(sample.Mean_meth) || [])[trackIdx] === "NA") {
+                    mTrack = { pos: [], lvl: [] };
+                  }
+
+                  const lastCpGPos = mTrack.pos.length > 0 ? Math.max(...mTrack.pos) : 0;
+                  const calculatedLen = (track.lengths || []).reduce((a, b) => a + (Number(b) || 0), 0);
+                  const visualLen = Math.max(sample.trackLengths?.[trackIdx] || 0, lastCpGPos, calculatedLen);
+                  const trackPixelWidth = Math.max(1, scaleX(visualLen) - scaleX(0));
+
+                  return (
+                    <g key={`meth-${trackIdx}`} transform={`translate(0, ${currentTrackY})`}>
+                      <text x={leftMarginOffset - 15} y={TEXT_VERTICAL_OFFSET} textAnchor="end" style={{ fontSize: `${baseFontSize}px`, fill: "#333", fontWeight: "500", fontFamily: currentFont }}>
+                        Allele {trackIdx + 1}
+                      </text>
+                      <MethylationPlot
+                        meth1={mTrack} bgWidth1={trackPixelWidth} scaleX={scaleX} leftMargin={leftMarginOffset}
+                        yStart={0} getColor={getMethylationColor} onHoverX={onHoverX} baseFontSize={baseFontSize}
+                      />
+                    </g>
+                  );
+                })}
+              </g>
+              <line x1={0} y1={TOTAL_HEIGHT - AXIS_HEIGHT - 5} x2={totalSvgWidth} y2={TOTAL_HEIGHT - AXIS_HEIGHT - 5} stroke="#eee" />
             </g>
           );
-        }
+        })() : (
+          selectedSamples.map((sampleName) => {
+            const sample = data.samples[sampleName];
+            if (!sample) return null;
 
-          // DATA MISSING HANDLER: Render a labeled placeholder instead of skipping
-          if (!sample) {
+            const yOffset = currentYTracker;
+            const trackCount = sample.parsedDecomp?.length || 2;
+            
+            const sampleLabelHeight = baseFontSize * 2.2;
+            const tracksAreaHeight = (trackCount * TRACK_HEIGHT) + ((trackCount - 1) * TRACK_GAP);
+            const sampleBlockHeight = sampleLabelHeight + tracksAreaHeight + SAMPLE_PADDING_BORDER;
+            currentYTracker += sampleBlockHeight;
+
+            const methTags = safeJson(sample.Meth_tag) || [];
+            const firstPos = methTags[0]?.[0]?.[0] || 0;
+            const startOffset = (firstPos > 100000) ? Number(data.Start || 0) : 0;
+
             return (
-              <g key={sIdx} transform={`translate(0, ${yOffset})`}>
-                <text x={margins.left} y={-5} style={{ fontWeight: "bold", fontSize: "12px", fill: "#d93025" }}>
-                  {sampleName} (Data not available for this sample)
+              <g key={sampleName} transform={`translate(0, ${yOffset})`}>
+                <text x={leftMarginOffset} y={baseFontSize * 1.4} style={{ fontWeight: "bold", fontSize: `${baseFontSize}px`, fill: "#333", fontFamily: currentFont }}>
+                  {sample.SampleID}
+                  {trackCount > 2 && <tspan fill="#666" fontWeight="normal" fontSize={`${baseFontSize - 2}px`}> ({trackCount} alleles detected)</tspan>}
                 </text>
-                <rect 
-                  x={margins.left} y={10} 
-                  width={totalSvgWidth - margins.left - margins.right} height={20} 
-                  fill="#f9f9f9" stroke="#ddd" strokeDasharray="4,4" rx={4}
+
+                {sample.parsedDecomp.map((track, trackIdx) => {
+                  const currentTrackY = sampleLabelHeight + (trackIdx * (TRACK_HEIGHT + TRACK_GAP));
+                  
+                  if (isDecomp) {
+                    const calculatedLen = (track.lengths || []).reduce((a, b) => a + (Number(b) || 0), 0);
+                    const displayLen = sample.trackLengths?.[trackIdx] || calculatedLen || 0;
+
+                    return (
+                      <g key={trackIdx} transform={`translate(0, ${currentTrackY})`}>
+                        <text x={leftMarginOffset - 15} y={TEXT_VERTICAL_OFFSET} textAnchor="end" style={{ fontSize: `${baseFontSize}px`, fill: "#333", fontFamily: currentFont }}>
+                          Allele {trackIdx + 1}
+                        </text>
+                        <DecompositionPlot
+                          decompRef={null} decompA1={track} decompA2={null} alleleLenRef={0} alleleLen1={displayLen} alleleLen2={0}
+                          scaleX={scaleX} leftMargin={leftMarginOffset} colorMap={colorMap} refMotif={data.Motif} yOffset={0} rowGap={0}
+                          baseFontSize={baseFontSize} barHeight={TRACK_HEIGHT - 6}
+                        />
+                      </g>
+                    );
+                  } else {
+                    const rawTrackMeth = methTags[trackIdx];
+                    let mTrack = { pos: [], lvl: [] };
+                    if (rawTrackMeth && rawTrackMeth !== "NA" && Array.isArray(rawTrackMeth)) {
+                      mTrack = {
+                        pos: (rawTrackMeth[0] || []).flat().map(p => Number(p) - startOffset),
+                        lvl: (rawTrackMeth[1] || []).flat().map(l => Number(l))
+                      };
+                    }
+                    if ((safeJson(sample.Mean_meth) || [])[trackIdx] === "NA") {
+                      mTrack = { pos: [], lvl: [] };
+                    }
+
+                    const lastCpGPos = mTrack.pos.length > 0 ? Math.max(...mTrack.pos) : 0;
+                    const calculatedLen = (track.lengths || []).reduce((a, b) => a + (Number(b) || 0), 0);
+                    const visualLen = Math.max(sample.trackLengths?.[trackIdx] || 0, lastCpGPos, calculatedLen);
+                    const trackPixelWidth = Math.max(1, scaleX(visualLen) - scaleX(0));
+
+                    return (
+                      <g key={trackIdx} transform={`translate(0, ${currentTrackY})`}>
+                        <text x={leftMarginOffset - 15} y={TEXT_VERTICAL_OFFSET} textAnchor="end" style={{ fontSize: `${baseFontSize}px`, fill: "#333", fontFamily: currentFont }}>
+                          Allele {trackIdx + 1}
+                        </text>
+                        <MethylationPlot
+                          meth1={mTrack} bgWidth1={trackPixelWidth} scaleX={scaleX} leftMargin={leftMarginOffset}
+                          yStart={0} getColor={getMethylationColor} onHoverX={onHoverX} baseFontSize={baseFontSize}
+                        />
+                      </g>
+                    );
+                  }
+                })}
+                
+                <line 
+                  x1={0} 
+                  y1={sampleBlockHeight - (SAMPLE_PADDING_BORDER / 2)} 
+                  x2={totalSvgWidth} 
+                  y2={sampleBlockHeight - (SAMPLE_PADDING_BORDER / 2)} 
+                  stroke="#eee" 
+                  strokeWidth="1.5"
                 />
-                <line x1={0} y1={SAMPLE_HEIGHT - 20} x2={totalSvgWidth} y2={SAMPLE_HEIGHT - 20} stroke="#eee" />
               </g>
             );
-          }
-          // Parse Decomposition
-          const dA1 = sample.parsedDecomp?.[1] || null; 
-          const dA2 = sample.parsedDecomp?.[2] || null;
+          })
+        )}
 
-          // Sum lengths using a helper to prevent NaN and leakage
-          const sumLengths = (obj) => (obj && obj.lengths ? obj.lengths.reduce((a, b) => a + (Number(b) || 0), 0) : 0);
-          const decompLen1 = sumLengths(dA1);
-          const decompLen2 = sumLengths(dA2);
-          const methTags = safeJson(sample.Meth_tag) || [];
-
-          // Check the first position to decide if we need to subtract startOffset
-          const firstPos = methTags[0]?.[0]?.[0] || 0;
-          const startOffset = (firstPos > 100000) ? Number(data.Start || 0) : 0; 
-
-          const m1 = { 
-            pos: (methTags[0]?.[0] || []).flat().map(p => Number(p) - startOffset), 
-            // REMOVE the check that turns things into -1, Keep the raw value.
-            lvl: (methTags[0]?.[1] || []).flat().map(l => Number(l))    
-          };
-
-          const m2 = { 
-            pos: (methTags[1]?.[0] || []).flat().map(p => Number(p) - startOffset), 
-            lvl: (methTags[1]?.[1] || []).flat().map(l => Number(l))
-          };
-
-          const lastCpGPos1 = Math.max(...(m1.pos || [0]));
-          const lastCpGPos2 = Math.max(...(m2.pos || [0]));
-
-          // Ensuring Allele 2 ONLY looks at Allele 2 data (index [2] and alleleLen2)
-          const visualLen1 = Math.max(Number(sample.alleleLen1 || 0), lastCpGPos1, decompLen1);
-          const visualLen2 = Math.max(Number(sample.alleleLen2 || 0), lastCpGPos2, decompLen2);
-
-          // Calculate pixel widths manually to verify independence
-          const startX = scaleX(0);
-          const width1 = Math.max(1, scaleX(visualLen1) - startX);
-          const width2 = Math.max(1, scaleX(visualLen2) - startX);
-
-          /*console.log(`[Width Debug] ${sample.SampleID}: A1=${visualLen1} (${width1}px), A2=${visualLen2} (${width2}px)`);   
-          console.log(`--- Data Debug: ${sample.SampleID} ---`);
-          console.log("Positions (A1):", m1.pos);
-          console.log("Levels (A1):", m1.lvl);
-          console.log("Lengths match?", m1.pos.length === m1.lvl.length);*/
-          // If lengths don't match, the 'N/A' is happening because 
-          // there is no level at index 'i' for position 'pos'
-
-          return (
-            <g key={sIdx} transform={`translate(0, ${yOffset})`}>
-              <text x={margins.left} y={-5} style={{ fontWeight: "bold", fontSize: "12px", fill: "#444" }}>
-                {sample.SampleID}
-              </text>
-
-              {isDecomp ? (
-                <DecompositionPlot
-                  decompRef={null} 
-                  decompA1={dA1} 
-                  decompA2={dA2}
-                  alleleLenRef={0}
-                  alleleLen1={sample.alleleLen1 || dA1?.totalLen || decompLen1 || 0}
-                  alleleLen2={sample.alleleLen2 || dA2?.totalLen || decompLen2 || 0}                
-                  scaleX={scaleX}
-                  leftMargin={margins.left}
-                  colorMap={colorMap}
-                  refMotif={data.Motif}
-                  yOffset={5} 
-                  rowGap={10}
-                />
-              ) : (
-                <MethylationPlot
-                  meth1={m1} meth2={m2}
-                  alleleLen1={visualLen1}
-                  alleleLen2={visualLen2}
-                  bgWidth1={width1}
-                  bgWidth2={width2}
-                  scaleX={scaleX}
-                  leftMargin={margins.left}
-                  yStart={10}
-                  rowGap={12}
-                  getColor={getMethylationColor}
-                  onHoverX={onHoverX}
-                />
-              )}
-              <line x1={0} y1={SAMPLE_HEIGHT - 20} x2={totalSvgWidth} y2={SAMPLE_HEIGHT - 20} stroke="#eee" />
-            </g>
-          );
-        })}
-
-        <g transform={`translate(0, ${TOTAL_HEIGHT - AXIS_HEIGHT})`}>
-          <Axis scale={scaleX} visibleRange={[0, fullLen]} width={totalSvgWidth}
-            leftMargin={margins.left} rightMargin={margins.right} bottomY={20} />
+        <g transform={`translate(0, ${TOTAL_HEIGHT - AXIS_HEIGHT + 15})`}>
+          <Axis 
+            scale={scaleX} 
+            visibleRange={[0, fullLen]} 
+            width={totalSvgWidth} 
+            leftMargin={leftMarginOffset} 
+            rightMargin={margins.right} 
+            bottomY={20}
+            baseFontSize={baseFontSize} 
+          />
         </g>
       </svg>
     </div>
