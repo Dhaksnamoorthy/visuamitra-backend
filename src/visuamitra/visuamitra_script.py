@@ -707,11 +707,18 @@ def refine_decomposition(fseq, motif_size, seq_len):
 
 def extract_methcutoff(file):
     try:
+        hg38_chr1_len = 248956422
+        t2t_chr1_len = 248387328
         vcf_obj = pysam.VariantFile(file)
         cutoff_desc = vcf_obj.header.info["MPC"].description
         total_samples = list(vcf_obj.header.samples)
+        chr1_length = vcf_obj.header.contigs['chr1'].length
+        if chr1_length == hg38_chr1_len:
+            ref_genome = "hg38"
+        else:
+            ref_genome = "t2t-chm13"
         vcf_obj.close()
-        return cutoff_desc, total_samples
+        return cutoff_desc, total_samples, ref_genome
     
     except (KeyError, AttributeError):
         return "Not specified", list(pysam.VariantFile(file).header.samples)
@@ -730,7 +737,7 @@ def visuamitra_data_extract_stream(file, chr=None, start_coord=None, end_coord=N
     if samples_index is None:
         samples_index = [0]
 
-    cutoff_info, total_samples = extract_methcutoff(file)
+    cutoff_info, total_samples, ref_genome = extract_methcutoff(file)
 
     if include_header:        
         yield f"##METADATA\t{cutoff_info}\n"
@@ -938,6 +945,23 @@ def sample_collector(sample_fields, sample_index, format_fields, ALT, MOTIF_DECO
              # This prevents crashing on empty data
              pass 
 
-        SAMPLE_dict[each_sidx] = [gt_value, complete_seqs, SD, complete_DS, DS_info, motif_set, MM, decoded_MV]
-        
+        a1_lpm_str = "NA"
+        a2_lpm_str = "NA"
+        try:
+            if len(SAMPLE) > 3:
+                lpm_fields = SAMPLE[format_fields.get('LPM', '.,.')].split(',') # Extract index 3 (LPM)
+
+                # Pull the raw LPM strings exactly as they are
+                if len(lpm_fields) > 0 and lpm_fields[0] != '.':
+                    a1_lpm_str = lpm_fields[0]
+                if len(lpm_fields) > 1 and lpm_fields[1] != '.':
+                    a2_lpm_str = lpm_fields[1]
+        except (ValueError, IndexError):
+            pass
+
+        # Package them together as a flat string track (e.g. "TAACCC-18:TAACCC-18")
+        lpm_counts_str = f"{a1_lpm_str}:{a2_lpm_str}"
+
+        SAMPLE_dict[each_sidx] = [gt_value, complete_seqs, SD, complete_DS, DS_info, motif_set, MM, decoded_MV, lpm_counts_str]
+
     return SAMPLE_dict
