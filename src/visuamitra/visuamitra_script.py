@@ -13,6 +13,11 @@ decode64_dict = {'A': 0.0, 'B': 1.56, 'C': 3.12, 'D': 4.69, 'E': 6.25, 'F': 7.81
  'r': 67.19, 's': 68.75, 't': 70.31, 'u': 71.88, 'v': 73.44, 'w': 75.0, 'x': 76.56, 'y': 78.12, 'z': 79.69, '0': 81.25, '1': 82.81,
  '2': 84.38, '3': 85.94, '4': 87.5, '5': 89.06, '6': 90.62, '7': 92.19, '8': 93.75, '9': 95.31, '+': 96.88, '/': 100.0, '-':-1, '*':-2, '.':-2}
 
+threshold_tbx = pysam.TabixFile("../assets/visuamitra_strchive_threshold.bed.gz")
+health_states = ["Unknown", "Benign", "Intermediate", "Pathogenic"]
+length_range = [1, 2, 3]
+motif_range = [1, 2, 3]
+
 cyclic_motif_registry = {}
  
 def motif_decomp_pos(dseq, MOTIF):
@@ -801,7 +806,7 @@ def visuamitra_data_extract_stream(file, chr=None, start_coord=None, end_coord=N
                 if not valid_indices: continue
 
                 # crash?
-                SAMPLE_dict = sample_collector(sample_fields, valid_indices, format_fields, ALT, MOTIF_DECOMP, REF_DECOMP, REF, MOTIF_SIZE, MOTIF)
+                SAMPLE_dict = sample_collector(sample_fields, valid_indices, format_fields, ALT, MOTIF_DECOMP, REF_DECOMP, REF, MOTIF_SIZE, MOTIF, [CHROM, START, END])
 
                 for s_idx in valid_indices:
                     data = SAMPLE_dict.get(s_idx)
@@ -814,7 +819,8 @@ def visuamitra_data_extract_stream(file, chr=None, start_coord=None, end_coord=N
                         CHROM, START, END, ID, MOTIF, MOTIF_SIZE,
                         s_name_clean, s_idx, data[0], 
                         data[1], data[2], data[3], data[4], 
-                        data[5], data[6], data[7], data[8]
+                        data[5], data[6], data[7], data[8],
+                        data[9]
                     ]
                     yield "\t".join(map(str, values)) + "\n"
                     row_yielded_count += 1
@@ -833,7 +839,7 @@ def visuamitra_data_extract_stream(file, chr=None, start_coord=None, end_coord=N
     finally:
         vcf_obj.close()
 
-def sample_collector(sample_fields, sample_index, format_fields, ALT, MOTIF_DECOMP, REF_DECOMP, REF, MOTIF_SIZE, MOTIF):
+def sample_collector(sample_fields, sample_index, format_fields, ALT, MOTIF_DECOMP, REF_DECOMP, REF, MOTIF_SIZE, MOTIF, coordinates):
     """Logic to process specific sample columns."""
     SAMPLE_dict = {}
 
@@ -864,6 +870,10 @@ def sample_collector(sample_fields, sample_index, format_fields, ALT, MOTIF_DECO
                 gt_indices = [0]
         except ValueError:
             gt_indices = [0]
+
+        # Extract Copy Number
+        cn_idx = format_fields.get('CN')
+        CN = [int(i) for i in SAMPLE[cn_idx].split(',')] if (cn_idx is not None and cn_idx < len(SAMPLE)) else []
 
         # Gather sequences for ALL parsed alleles dynamically
         # complete_seqs starts with REF (index 0) followed by every allele matched in gt_indices
@@ -959,6 +969,88 @@ def sample_collector(sample_fields, sample_index, format_fields, ALT, MOTIF_DECO
 
         lpm_counts_str = ":".join(lpm_list)
 
-        SAMPLE_dict[each_sidx] = [gt_value, complete_seqs, SD, complete_DS, DS_info, motif_set, MM, decoded_MV, lpm_counts_str]
+        subject_status = []
+        for lidx, each_lpm in enumerate(lpm_list):
+            if each_lpm == "NA":
+                subject_status.append((MOTIF, CN[lidx]))
+            else:
+                motif_and_copy = each_lpm.split('-')
+                subject_status.append( (motif_and_copy[0], int(motif_and_copy[1])) )
+
+        Subject_health = pathogenicity_check(coordinates, subject_status)
+
+        SAMPLE_dict[each_sidx] = [gt_value, complete_seqs, SD, complete_DS, DS_info, motif_set, MM, decoded_MV, lpm_counts_str, Subject_health]
 
     return SAMPLE_dict
+
+def pathogenicity_check(coordinates, subject_status):
+
+    ### Extracting the strchive threshold values
+    patho_row = []
+    for patho_row in threshold_tbx.fetch(coordinates[0], int(coordinates[1]), int(coordinates[2]) ):
+        patho_row = patho_row.split("\t")
+        disease_id = patho_row[5]
+        pathogenic_ranges = [int(i) if i!='NA' else -1 for i in patho_row[6:12]]
+        susceptible_motifs = [set(i.split(',')) if i!='NA' else set() for i in patho_row[12:15]]
+        Pathogenic_state = patho_row[15]
+        break
+
+    if patho_row == []:
+        return None
+    ## Determining the pathogenecity for each allele
+    Allele_states = []
+    for each_allele in subject_status:
+        print("each_allele = ", each_allele)
+        subject_motif = set(get_cyclic_variants(each_allele[0]))
+        subject_copy = each_allele[1]
+        ## Checking the length range based on copy number
+        boolean_range = [(pathogenic_ranges[0] <= subject_copy <= pathogenic_ranges[1]), (pathogenic_ranges[2] <= subject_copy <= pathogenic_ranges[3]), (pathogenic_ranges[4] <= subject_copy or pathogenic_ranges[5] <= subject_copy) ]
+        print("boolean_range = ", boolean_range)
+        if any(boolean_range):
+            length_state = length_range[boolean_range.index(True)]
+        ## if all values are False, then check the nearby length range
+        elif -1 not in pathogenic_ranges: # no NA should be there in the ranges
+            diff_with_benign_intermediate = [abs(pathogenic_ranges[1] - subject_copy), abs(pathogenic_ranges[3] - subject_copy)] # check whether the length is near benign or intermediate
+            length_state = length_range[diff_with_benign_intermediate.index(min(diff_with_benign_intermediate))] # will be either benign or intermediate
+        else: length_state = 0 #"Unknown"
+        print("length_state = ", length_state)
+
+        ## Checking the motif type
+        motif_state = 0 #"Unknown"
+        for midx, each_motif_group in enumerate(susceptible_motifs):
+            if each_motif_group == []: continue
+            elif len(subject_motif & each_motif_group) > 0:
+                motif_state = motif_range[midx]
+                break
+            else: continue
+        print("motif_state = ", motif_state, '\n')
+
+        ## Finalising Allele state
+        if motif_state == 0: # "Unknown"
+            Allele_states.append(0)
+        elif motif_state == 1: #"Single"
+            Allele_states.append(length_state)
+        elif motif_state == 2: #"Benign"
+            Allele_states.append(1)
+        else: ## pathogenic motif state
+            Allele_states.append(length_state)
+
+    print("Allele_states ::: ", Allele_states)
+
+    ### Determining the Subject condition
+    allele_state_set = set(Allele_states)
+    if Pathogenic_state == "Dominant":
+        print("State is dominant")
+        print("max(Allele_states) = ", max(Allele_states))
+        Subject_health = health_states[max(Allele_states)]
+            
+    else: ##Pathogenic_state == "Recessive":
+        if len(allele_state_set) == 1:
+            Subject_health = health_states[Allele_states[0]]
+        elif 0 in allele_state_set: # giving the state other than "Unknown" in heterozygous state
+            processed_set = list(allele_state_set - {0})
+            Subject_health = health_states[processed_set[0]]
+        else:
+            Subject_health = health_states[min(Allele_states)]
+            
+    return Subject_health
